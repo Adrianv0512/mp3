@@ -1,36 +1,43 @@
-// Get the packages we need
-var express = require('express'),
-    router = express.Router(),
-    mongoose = require('mongoose');
+const express = require('express');
+const mongoose = require('mongoose');
+const User = require('./models/user');
+const Task = require('./models/task');
 
-// Read .env file
 require('dotenv').config();
 
-// Create our Express application
-var app = express();
+const app = express();
+const port = process.env.PORT || 3000;
 
-// Use environment defined port or 3000
-var port = process.env.PORT || 3000;
-
-// Connect to a MongoDB --> Uncomment this once you have a connection string!!
-//mongoose.connect(process.env.MONGODB_URI).catch(function (err) { console.error('MongoDB connection error:', err.message); });
-
-// Allow CORS so that backend and frontend could be put on different servers
-var allowCrossDomain = function (req, res, next) {
-    res.header("Access-Control-Allow-Origin", "*");
-    res.header("Access-Control-Allow-Headers", "X-Requested-With, X-HTTP-Method-Override, Content-Type, Accept");
-    res.header("Access-Control-Allow-Methods", "POST, GET, PUT, DELETE, OPTIONS");
+// Allow CORS so that backend and frontend can be put on different servers.
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'X-Requested-With, X-HTTP-Method-Override, Content-Type, Accept');
+    res.header('Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, OPTIONS');
     next();
-};
-app.use(allowCrossDomain);
+});
 
-// Parse URL-encoded and JSON request bodies
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Use routes as a module (see index.js)
+const router = express.Router();
 require('./routes')(app, router);
 
-// Start the server
-app.listen(port);
-console.log('Server running on port ' + port);
+async function start() {
+    if (!process.env.MONGODB_URI || process.env.MONGODB_URI.includes('<')) {
+        console.error('Set MONGODB_URI in .env before starting the server.');
+        process.exitCode = 1;
+        return;
+    }
+
+    try {
+        await mongoose.connect(process.env.MONGODB_URI);
+        await Promise.all([User.init(), Task.init()]);
+        console.log('Connected to MongoDB.');
+        app.listen(port, () => console.log(`Server running on port ${port}`));
+    } catch (error) {
+        console.error('MongoDB connection failed. Check the Atlas connection string, database user, and network access.');
+        process.exitCode = 1;
+    }
+}
+
+start();

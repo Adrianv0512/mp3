@@ -1,10 +1,19 @@
-// Load required packages
-var mongoose = require('mongoose');
+const mongoose = require('mongoose');
+const strictString = require('./strictString');
 
-// Define our user schema
-var UserSchema = new mongoose.Schema({
-    name: String
+const userSchema = new mongoose.Schema({
+    name: { type: String, required: true, trim: true, set: strictString },
+    email: { type: String, required: true, trim: true, unique: true, set: strictString },
+    pendingTasks: {
+        type: [{ type: String, set: strictString, validate: mongoose.isObjectIdOrHexString }],
+        default: [],
+        castNonArrays: false
+    },
+    dateCreated: { type: Date, default: Date.now, immutable: true }
 });
 
-// Export the Mongoose model
-module.exports = mongoose.model('User', UserSchema);
+userSchema.pre('validate', function () {
+    if (this.isNew) this.dateCreated = new Date();
+});
+
+module.exports = mongoose.model('User', userSchema);
