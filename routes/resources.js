@@ -2,8 +2,6 @@ const mongoose = require('mongoose');
 const { QueryParameterError, collectionQuery, selection } = require('./query');
 const references = require('./references');
 
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 function isObject(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -16,8 +14,7 @@ function validateBody(body, kind) {
     if (!isObject(body)) return null;
 
     if (kind === 'User') {
-        if (!validText(body.name) || !validText(body.email) ||
-            !emailPattern.test(body.email.trim())) return null;
+        if (!validText(body.name) || !validText(body.email)) return null;
         if (body.pendingTasks !== undefined &&
             (!Array.isArray(body.pendingTasks) || !body.pendingTasks.every(
                 id => typeof id === 'string' && mongoose.isObjectIdOrHexString(id)

@@ -113,6 +113,9 @@ test('all CRUD endpoints: success, validation, replacement, and no changes on fa
         assert.equal((await request('/users', 'POST', { name: '', email: 'wrong' })).status, 400);
         assert.equal((await request('/users', 'POST', { name: 'Other', email: 'ada@example.com' })).status, 400);
         assert.equal((await request('/users', 'POST', { name: 5, email: 'a@b.com' })).status, 400);
+        result = await request('/users', 'POST', { name: 'Identifier', email: 'internal-id' });
+        assert.equal(result.status, 201, 'email is a required string, with no format rule in the README');
+        assert.equal((await request('/users/' + result.json.data._id, 'DELETE')).status, 204);
         assert.equal(users.records.size, 1);
         result = await request('/users/' + userId, 'PUT', {
             name: 'Ada Lovelace', email: 'ada@example.com', dateCreated: '1999-01-01'
