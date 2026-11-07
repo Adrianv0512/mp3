@@ -9,12 +9,23 @@ const registerRoutes = require('../routes');
 function fakeDatabase(Model, uniqueEmail = false) {
     const records = new Map();
     const original = {
-        find: Model.find, findById: Model.findById,
+        find: Model.find, findById: Model.findById, findOne: Model.findOne,
         findOneAndReplace: Model.findOneAndReplace,
-        findByIdAndDelete: Model.findByIdAndDelete, save: Model.prototype.save
+        findByIdAndDelete: Model.findByIdAndDelete, save: Model.prototype.save,
+        updateOne: Model.updateOne, updateMany: Model.updateMany
     };
-    Model.find = async () => [...records.values()];
+    Model.find = () => ({
+        skip() { return this; },
+        limit() { return this; },
+        then(resolve, reject) { return Promise.resolve([...records.values()]).then(resolve, reject); }
+    });
     Model.findById = async id => records.get(String(id)) || null;
+    Model.findOne = async filter => [...records.values()].find(row =>
+        row.email === filter.email &&
+        (!filter._id || String(row._id) !== String(filter._id.$ne))
+    ) || null;
+    Model.updateOne = async () => ({ matchedCount: 1 });
+    Model.updateMany = async () => ({ matchedCount: 0 });
     Model.prototype.save = async function () {
         await this.validate();
         const value = this.toObject();
@@ -44,20 +55,28 @@ function fakeDatabase(Model, uniqueEmail = false) {
         restore() {
             Model.find = original.find;
             Model.findById = original.findById;
+            Model.findOne = original.findOne;
             Model.findOneAndReplace = original.findOneAndReplace;
             Model.findByIdAndDelete = original.findByIdAndDelete;
+            Model.updateOne = original.updateOne;
+            Model.updateMany = original.updateMany;
             Model.prototype.save = original.save;
         }
     };
 }
 
 test('all CRUD endpoints: success, validation, replacement, and no changes on failure', async () => {
+    const originalStartSession = mongoose.startSession;
+    mongoose.startSession = async () => ({
+        withTransaction: async work => work(),
+        endSession: async () => {}
+    });
     const users = fakeDatabase(User, true);
     const tasks = fakeDatabase(Task);
     const app = express();
     app.use(express.json());
     registerRoutes(app, express.Router());
-    const server = app.listen(0);
+    const server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     const base = 'http://127.0.0.1:' + server.address().port + '/api';
     async function request(path, method = 'GET', body) {
@@ -104,8 +123,7 @@ test('all CRUD endpoints: success, validation, replacement, and no changes on fa
         result = await request('/users/' + userId, 'PUT', {
             name: 'Ada Lovelace', email: 'ada@example.com', pendingTasks: [newId()]
         });
-        assert.equal(result.status, 200);
-        assert.equal(result.json.data.pendingTasks.length, 1);
+        assert.equal(result.status, 404);
         result = await request('/users/' + userId, 'PUT', {
             name: 'Ada Lovelace', email: 'ada@example.com'
         });
@@ -179,7 +197,7 @@ test('all CRUD endpoints: success, validation, replacement, and no changes on fa
         });
         assert.equal(invalidJson.status, 400);
         assert.deepEqual(Object.keys(await invalidJson.json()).sort(), ['data', 'message']);
-        User.find = async () => { throw new Error('database internals'); };
+        User.find = () => { throw new Error('database internals'); };
         result = await request('/users');
         assert.equal(result.status, 500);
         assert.equal(result.json.data, null);
@@ -188,10 +206,16 @@ test('all CRUD endpoints: success, validation, replacement, and no changes on fa
         await new Promise(resolve => server.close(resolve));
         users.restore();
         tasks.restore();
+        mongoose.startSession = originalStartSession;
     }
 });
 
 test('PUT keeps dateCreated through the real Mongoose replacement query', async () => {
+    const originalStartSession = mongoose.startSession;
+    mongoose.startSession = async () => ({
+        withTransaction: async work => work(),
+        endSession: async () => {}
+    });
     const oldDate = new Date('2020-01-01T00:00:00.000Z');
     const userId = String(new mongoose.Types.ObjectId());
     const taskId = String(new mongoose.Types.ObjectId());
@@ -199,11 +223,15 @@ test('PUT keeps dateCreated through the real Mongoose replacement query', async 
         userFind: User.findById,
         taskFind: Task.findById,
         userReplace: User.collection.findOneAndReplace,
-        taskReplace: Task.collection.findOneAndReplace
+        taskReplace: Task.collection.findOneAndReplace,
+        userFindOne: User.findOne,
+        taskUpdateMany: Task.updateMany
     };
     const observed = [];
     User.findById = async () => ({ dateCreated: oldDate });
     Task.findById = async () => ({ dateCreated: oldDate });
+    User.findOne = async () => null;
+    Task.updateMany = async () => ({ matchedCount: 0 });
     User.collection.findOneAndReplace = async (filter, replacement) => {
         observed.push(replacement.dateCreated.toISOString());
         return { _id: filter._id, ...replacement };
@@ -215,7 +243,7 @@ test('PUT keeps dateCreated through the real Mongoose replacement query', async 
     const app = express();
     app.use(express.json());
     registerRoutes(app, express.Router());
-    const server = app.listen(0);
+    const server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     const base = 'http://127.0.0.1:' + server.address().port + '/api';
     try {
@@ -239,5 +267,8 @@ test('PUT keeps dateCreated through the real Mongoose replacement query', async 
         Task.findById = original.taskFind;
         User.collection.findOneAndReplace = original.userReplace;
         Task.collection.findOneAndReplace = original.taskReplace;
+        User.findOne = original.userFindOne;
+        Task.updateMany = original.taskUpdateMany;
+        mongoose.startSession = originalStartSession;
     }
 });

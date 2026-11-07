@@ -1,4 +1,6 @@
 const mongoose = require('mongoose');
+const { QueryParameterError, collectionQuery, selection } = require('./query');
+const references = require('./references');
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -48,14 +50,28 @@ function validateBody(body, kind) {
 }
 
 function sendError(res, error, kind) {
+    if (error instanceof references.ReferenceError) {
+        return res.status(error.status).json({ message: error.message, data: null });
+    }
     if (error && error.code === 11000) {
         return res.status(400).json({ message: 'Email is already in use.', data: null });
     }
     if (error instanceof mongoose.Error.ValidationError ||
-        error instanceof mongoose.Error.CastError || error instanceof TypeError) {
+        error instanceof mongoose.Error.CastError) {
         return res.status(400).json({ message: `Invalid ${kind.toLowerCase()} data.`, data: null });
     }
     console.error(`Unexpected ${kind.toLowerCase()} API error:`, error);
+    return res.status(500).json({ message: 'Internal server error.', data: null });
+}
+
+function sendQueryError(res, error, kind) {
+    if (error instanceof QueryParameterError) {
+        return res.status(400).json({ message: error.message, data: null });
+    }
+    if (error instanceof mongoose.Error.CastError || error instanceof mongoose.Error.ValidationError) {
+        return res.status(400).json({ message: 'Invalid query parameter.', data: null });
+    }
+    console.error(`Unexpected ${kind.toLowerCase()} query error:`, error);
     return res.status(500).json({ message: 'Internal server error.', data: null });
 }
 
@@ -63,10 +79,25 @@ function registerResource(router, path, Model, kind) {
     router.route(path)
         .get(async (req, res) => {
             try {
-                const documents = await Model.find();
+                const { where, sort, select, skip, limit, count } = collectionQuery(
+                    req.query, kind === 'Task' ? 100 : undefined
+                );
+                if (count) {
+                    const total = await Model.countDocuments(where);
+                    return res.status(200).json({ message: `${kind}s counted.`, data: total });
+                }
+                if (limit === 0) {
+                    return res.status(200).json({ message: `${kind}s retrieved.`, data: [] });
+                }
+                let query = Model.find(where);
+                if (sort) query = query.sort(sort);
+                if (select) query = query.select(select);
+                query = query.skip(skip);
+                if (limit !== undefined) query = query.limit(limit);
+                const documents = await query;
                 return res.status(200).json({ message: `${kind}s retrieved.`, data: documents });
             } catch (error) {
-                return sendError(res, error, kind);
+                return sendQueryError(res, error, kind);
             }
         })
         .post(async (req, res) => {
@@ -74,7 +105,9 @@ function registerResource(router, path, Model, kind) {
             if (!fields) return res.status(400).json({ message: `Invalid ${kind.toLowerCase()} data.`, data: null });
 
             try {
-                const document = await new Model(fields).save();
+                const document = kind === 'User'
+                    ? await references.createUser(fields)
+                    : await references.createTask(fields);
                 return res.status(201).json({ message: `${kind} created.`, data: document });
             } catch (error) {
                 return sendError(res, error, kind);
@@ -87,11 +120,14 @@ function registerResource(router, path, Model, kind) {
                 return res.status(404).json({ message: `${kind} not found.`, data: null });
             }
             try {
-                const document = await Model.findById(req.params.id);
+                const projection = selection(req.query);
+                let query = Model.findById(req.params.id);
+                if (projection) query = query.select(projection);
+                const document = await query;
                 if (!document) return res.status(404).json({ message: `${kind} not found.`, data: null });
                 return res.status(200).json({ message: `${kind} retrieved.`, data: document });
             } catch (error) {
-                return sendError(res, error, kind);
+                return sendQueryError(res, error, kind);
             }
         })
         .put(async (req, res) => {
@@ -105,16 +141,9 @@ function registerResource(router, path, Model, kind) {
                 const fields = validateBody(req.body, kind);
                 if (!fields) return res.status(400).json({ message: `Invalid ${kind.toLowerCase()} data.`, data: null });
 
-                const replacement = new Model(fields);
-                await replacement.validate();
-                const values = replacement.toObject({ versionKey: false });
-                delete values._id;
-                values.dateCreated = existing.dateCreated;
-
-                const updated = await Model.findOneAndReplace(
-                    { _id: req.params.id }, values, { returnDocument: 'after' }
-                );
-                if (!updated) return res.status(404).json({ message: `${kind} not found.`, data: null });
+                const updated = kind === 'User'
+                    ? await references.replaceUser(req.params.id, fields)
+                    : await references.replaceTask(req.params.id, fields);
                 return res.status(200).json({ message: `${kind} replaced.`, data: updated });
             } catch (error) {
                 return sendError(res, error, kind);
@@ -125,8 +154,8 @@ function registerResource(router, path, Model, kind) {
                 return res.status(404).json({ message: `${kind} not found.`, data: null });
             }
             try {
-                const deleted = await Model.findByIdAndDelete(req.params.id);
-                if (!deleted) return res.status(404).json({ message: `${kind} not found.`, data: null });
+                if (kind === 'User') await references.deleteUser(req.params.id);
+                else await references.deleteTask(req.params.id);
                 return res.status(204).end();
             } catch (error) {
                 return sendError(res, error, kind);
